@@ -1215,7 +1215,7 @@
         vc.fillStyle = mc2[i]; vc.font = '7px "Press Start 2P"'; vc.textAlign = 'left'; vc.textBaseline = 'top';
         vc.fillText(`${i + 1}`, px + 3, ry + 1);
         vc.fillStyle = SHIRT[r.shirt]; vc.font = '7px "Press Start 2P"';
-        vc.fillText(r.name.slice(0, 6), px + 18, ry + 1);
+        vc.fillText(r.name.slice(0, 10), px + 18, ry + 1);
         vc.fillStyle = '#405870'; vc.fillText(`${r.av | 0}`, px + 80, ry + 1);
         const bw = ((Math.min(r.av / Math.max(GOAL, 1), 1)) * 32) | 0;
         vc.fillStyle = '#0c1420'; vc.fillRect(px + 80, ry + 10, 32, 4);
