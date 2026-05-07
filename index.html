@@ -117,6 +117,12 @@
       box-shadow: inset -2px -2px 0 #020802, inset 2px 2px 0 #205818;
     }
 
+    .pb.r {
+      background: #220808;
+      color: #ff4040;
+      box-shadow: inset -2px -2px 0 #080202, inset 2px 2px 0 #581818;
+    }
+
     .layout {
       display: grid;
       grid-template-columns: 1fr 300px;
@@ -413,6 +419,22 @@
       transform: translateX(-50%) translateY(0)
     }
 
+    .sync-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--grn);
+      margin-left: 6px;
+      vertical-align: middle;
+      opacity: 0;
+      transition: opacity .3s;
+    }
+
+    .sync-dot.on {
+      opacity: 1;
+    }
+
     @media(max-width:680px) {
       .layout {
         grid-template-columns: 1fr;
@@ -431,8 +453,9 @@
   <header>
     <div class="logo">🕹 <b>EXPEDIENTES</b> TRAIL</div>
     <div class="hbtns">
+      <button class="pb r" onclick="resetData()">✕ RESET</button>
       <button class="pb" id="pauseBtn" onclick="togglePause()">⏸ PAUSA</button>
-      <button class="pb g" onclick="applyAll()">► ACTUALIZAR</button>
+      <button class="pb g" onclick="applyAll()">► ACTUALIZAR<span class="sync-dot" id="syncDot"></span></button>
     </div>
   </header>
   <div class="layout">
@@ -441,6 +464,86 @@
   </div>
   <div class="toast" id="toast"></div>
   <script>
+    /* ════════════════════════════════════════════
+       PERSISTENCE CONFIG
+       ════════════════════════════════════════════
+       localStorage → funciona sin configuración.
+       JSONBin (opcional) → sincroniza entre dispositivos/navegadores.
+         1. Crea cuenta gratuita en https://jsonbin.io
+         2. Ve a API Keys y copia tu Master Key
+         3. Crea un Bin vacío ({}) y copia su ID
+         4. Pega ambos valores abajo
+       ════════════════════════════════════════════ */
+    const LS_KEY = 'expedientes_trail_v1';
+    const JSONBIN_KEY = '$2a$10$moFA3mrxiu8vi4EM1RRuGOj2J/ZQIeYhbyZl7UmHNHCj9JZx7LhsS';   // ← Tu X-Master-Key de JSONBin (vacío = desactivado)
+    const JSONBIN_BIN = '69fc4016250b1311c316850f';   // ← ID del bin (vacío = desactivado)
+
+    let _saveDebounce = null;
+
+    function saveState() {
+      const data = {
+        goal: GOAL,
+        runners: runners.map(r => ({ ...r }))
+      };
+
+      // Siempre guardar en localStorage (instantáneo)
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify(data));
+      } catch (e) {
+        console.warn('localStorage no disponible:', e);
+      }
+
+      // Guardar en JSONBin si está configurado (con debounce de 1.5s)
+      if (JSONBIN_KEY && JSONBIN_BIN) {
+        clearTimeout(_saveDebounce);
+        _saveDebounce = setTimeout(() => {
+          const dot = document.getElementById('syncDot');
+          if (dot) dot.classList.add('on');
+          fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Master-Key': JSONBIN_KEY
+            },
+            body: JSON.stringify(data)
+          })
+            .then(r => r.ok ? toast('☁ SYNC OK') : Promise.reject())
+            .catch(() => toast('⚠ SYNC ERROR'))
+            .finally(() => { if (dot) setTimeout(() => dot.classList.remove('on'), 800); });
+        }, 1500);
+      }
+    }
+
+    async function loadState() {
+      // Intentar JSONBin primero si está configurado
+      if (JSONBIN_KEY && JSONBIN_BIN) {
+        try {
+          const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN}/latest`, {
+            headers: { 'X-Master-Key': JSONBIN_KEY }
+          });
+          if (res.ok) {
+            const json = await res.json();
+            if (json.record && json.record.runners) return json.record;
+          }
+        } catch (e) {
+          console.warn('JSONBin no disponible, usando localStorage');
+        }
+      }
+      // Fallback a localStorage
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function resetData() {
+      if (!confirm('Vas a borrar todo e, cuidau')) return;
+      try { localStorage.removeItem(LS_KEY); } catch (e) { }
+      location.reload();
+    }
+
     /* ════════════════════════════════════════════
        VIRTUAL CANVAS  640 × 360
        ════════════════════════════════════════════ */
@@ -485,7 +588,7 @@
     const GENDER_NAMES = ['Masc', 'Fem'];
 
     /* ════════════════════════════════════════════
-       RUNNERS
+       RUNNERS — valores por defecto
        ════════════════════════════════════════════ */
     let GOAL = 100, paused = false;
     let runners = [
@@ -503,24 +606,16 @@
 
     /* ════════════════════════════════════════════
        SPRITE ENGINE  32 × 48 pixels
-       All drawing is done programmatically using
-       pixel-precise rectangles. Each body part is
-       explicitly plotted so sprites are readable
-       at any scale.
        ════════════════════════════════════════════ */
     const SW = 32, SH = 48;
 
-    // p(ctx, x,y,w,h,col) — draw one pixel block
     function p(ctx, x, y, w, h, col) { ctx.fillStyle = col; ctx.fillRect(x, y, w, h); }
-
-    // Draw outline/shadow under a rect
     function outline(ctx, x, y, w, h) {
-      p(ctx, x, y + h, w, 1, 'rgba(0,0,0,0.5)');  // bottom shadow
-      p(ctx, x + w, y, 1, h, 'rgba(0,0,0,0.4)');  // right shadow
+      p(ctx, x, y + h, w, 1, 'rgba(0,0,0,0.5)');
+      p(ctx, x + w, y, 1, h, 'rgba(0,0,0,0.4)');
     }
 
     function drawSprite(ctx, r, frame) {
-      // frame: 0=stand, 1=leftFwd, 2=rightFwd, 99=celebrate
       const sk = SKIN[r.skin];
       const skD = darken(sk, .72);
       const skL = lighten(sk, 1.2);
@@ -541,129 +636,94 @@
 
       ctx.clearRect(0, 0, SW, SH);
 
-      /* ── 1. HAIR (back layer, drawn before head) ── */
-      drawHair(ctx, r, ha, haD, haL, OUT, isFem, true); // back
+      drawHair(ctx, r, ha, haD, haL, OUT, isFem, true);
 
-      /* ── 2. HEAD ── */
-      // Head shape: 10w × 12h oval, centered at x=11, y=3
       const hx = 11, hy = 3, hw = 10, hh = 12;
-      p(ctx, hx, hy, hw, 1, OUT);                      // top outline
-      p(ctx, hx, hy + hh, hw, 1, OUT);                   // bottom outline
-      p(ctx, hx - 1, hy + 1, 1, hh - 2, OUT);               // left outline
-      p(ctx, hx + hw, hy + 1, 1, hh - 2, OUT);              // right outline
-      p(ctx, hx, hy + 1, hw, hh - 2, sk);                  // skin fill
-      p(ctx, hx + 1, hy + 1, hw - 2, 1, skL);               // top highlight row
-      p(ctx, hx, hy + 1, 1, hh - 2, skL);                 // left highlight col
-      p(ctx, hx + hw - 1, hy + 1, 1, hh - 2, skD);            // right shadow
-      p(ctx, hx + 1, hy + hh - 2, hw - 2, 2, skD);            // jaw shadow
+      p(ctx, hx, hy, hw, 1, OUT);
+      p(ctx, hx, hy + hh, hw, 1, OUT);
+      p(ctx, hx - 1, hy + 1, 1, hh - 2, OUT);
+      p(ctx, hx + hw, hy + 1, 1, hh - 2, OUT);
+      p(ctx, hx, hy + 1, hw, hh - 2, sk);
+      p(ctx, hx + 1, hy + 1, hw - 2, 1, skL);
+      p(ctx, hx, hy + 1, 1, hh - 2, skL);
+      p(ctx, hx + hw - 1, hy + 1, 1, hh - 2, skD);
+      p(ctx, hx + 1, hy + hh - 2, hw - 2, 2, skD);
 
-      // Ears
       p(ctx, hx - 2, hy + 5, 2, 4, sk);
       p(ctx, hx - 2, hy + 5, 1, 4, skD);
       p(ctx, hx + hw, hy + 5, 2, 4, sk);
       p(ctx, hx + hw + 1, hy + 5, 1, 4, skD);
 
-      /* ── 3. EYES ── */
-      // Left eye (viewer's right): x=14, y=8
-      p(ctx, 14, 8, 3, 3, '#ffffff');                   // white
-      p(ctx, 14, 8, 3, 1, OUT);                         // top lid
-      p(ctx, 14, 8, 1, 3, OUT);                         // left lid
-      p(ctx, 16, 8, 1, 3, OUT);                         // right lid
-      p(ctx, 14, 10, 3, 1, OUT);                        // bottom lid
-      p(ctx, 15, 9, 1, 1, '#1a2850');                   // iris
-      p(ctx, 15, 9, 1, 1, OUT);                         // pupil center
-      p(ctx, 15, 8, 1, 1, 'rgba(255,255,255,0.8)');     // glint
-      // Right eye: x=19, y=8
+      p(ctx, 14, 8, 3, 3, '#ffffff');
+      p(ctx, 14, 8, 3, 1, OUT); p(ctx, 14, 8, 1, 3, OUT); p(ctx, 16, 8, 1, 3, OUT); p(ctx, 14, 10, 3, 1, OUT);
+      p(ctx, 15, 9, 1, 1, '#1a2850'); p(ctx, 15, 9, 1, 1, OUT); p(ctx, 15, 8, 1, 1, 'rgba(255,255,255,0.8)');
       p(ctx, 19, 8, 3, 3, '#ffffff');
       p(ctx, 19, 8, 3, 1, OUT); p(ctx, 19, 8, 1, 3, OUT); p(ctx, 21, 8, 1, 3, OUT); p(ctx, 19, 10, 3, 1, OUT);
       p(ctx, 20, 9, 1, 1, '#1a2850'); p(ctx, 20, 9, 1, 1, OUT); p(ctx, 20, 8, 1, 1, 'rgba(255,255,255,0.8)');
-      // Eyebrows
+
       const browCol = haD;
       p(ctx, 14, 7, 3, 1, browCol);
       p(ctx, 19, 7, 3, 1, browCol);
 
-      /* ── 4. NOSE ── */
-      p(ctx, 18, 11, 2, 1, skD);   // nose bridge shadow
-      p(ctx, 17, 12, 1, 1, skD);   // left nostril shadow
+      p(ctx, 18, 11, 2, 1, skD);
+      p(ctx, 17, 12, 1, 1, skD);
 
-      /* ── 5. MOUTH ── */
-      p(ctx, 15, 13, 4, 1, darken(sk, .6));   // smile line
+      p(ctx, 15, 13, 4, 1, darken(sk, .6));
       if (!isFem) { p(ctx, 15, 13, 1, 1, darken(sk, .5)); p(ctx, 18, 13, 1, 1, darken(sk, .5)); }
-      // Lip for female
       if (isFem) { p(ctx, 15, 13, 4, 1, '#d06060'); p(ctx, 16, 13, 2, 1, '#e08080'); }
 
-      /* ── 6. HAIR (front layer) ── */
       drawHair(ctx, r, ha, haD, haL, OUT, isFem, false);
 
-      /* ── 7. NECK ── */
       p(ctx, 15, 15, 4, 3, sk);
       p(ctx, 15, 15, 1, 3, skL);
       p(ctx, 18, 15, 1, 3, skD);
 
-      /* ── 8. BODY — varies by animation frame ── */
-      const f = frame === 99 ? 0 : frame; // celebrate uses frame 0 body base
+      const f = frame === 99 ? 0 : frame;
 
-      // Torso: 12w × 10h at x=10,y=18
       const tx = 10, ty = 18, tw = 12, th = 10;
       p(ctx, tx, ty, tw, th, sh);
-      p(ctx, tx, ty, tw, 1, OUT);                       // top
-      p(ctx, tx, ty + th, tw, 1, OUT);                    // bottom
-      p(ctx, tx - 1, ty, 1, th + 1, OUT);                   // left
-      p(ctx, tx + tw, ty, 1, th + 1, OUT);                  // right
-      p(ctx, tx, ty, 1, th, shL);                       // left highlight
-      p(ctx, tx, ty, tw, 1, shL);                       // top highlight
-      p(ctx, tx + tw - 1, ty, 1, th, shD);                  // right shadow
-      p(ctx, tx + 1, ty + th - 2, tw - 2, 2, shD);             // bottom shadow
-      // Shirt collar V-neck
+      p(ctx, tx, ty, tw, 1, OUT);
+      p(ctx, tx, ty + th, tw, 1, OUT);
+      p(ctx, tx - 1, ty, 1, th + 1, OUT);
+      p(ctx, tx + tw, ty, 1, th + 1, OUT);
+      p(ctx, tx, ty, 1, th, shL);
+      p(ctx, tx, ty, tw, 1, shL);
+      p(ctx, tx + tw - 1, ty, 1, th, shD);
+      p(ctx, tx + 1, ty + th - 2, tw - 2, 2, shD);
       p(ctx, 14, 18, 4, 1, shL);
       p(ctx, 15, 19, 2, 1, shL);
-      // Bib number
       p(ctx, 13, 21, 6, 5, 'rgba(255,255,255,0.9)');
       p(ctx, 13, 21, 6, 1, 'rgba(0,0,0,0.15)');
       p(ctx, 14, 22, 4, 3, 'rgba(0,0,0,0.1)');
-      // Race number text (tiny "1" shape)
       p(ctx, 15, 22, 1, 3, 'rgba(0,0,0,0.6)'); p(ctx, 14, 22, 1, 1, 'rgba(0,0,0,0.6)');
       p(ctx, 14, 24, 3, 1, 'rgba(0,0,0,0.6)');
 
-      /* ── 9. HIPS / SHORTS ── */
       const hipY = 28;
-      p(ctx, tx, hipY, tw, 1, paL);            // waistband highlight
+      p(ctx, tx, hipY, tw, 1, paL);
       p(ctx, tx, hipY + 1, tw, 1, pa);
       p(ctx, tx, hipY + 2, tw, 1, pa);
       p(ctx, tx - 1, hipY, 1, 3, OUT);
       p(ctx, tx + tw, hipY, 1, 3, OUT);
 
-      /* ── 10. ARMS — animated ── */
-      // Arm swing: f0=neutral, f1=left back/right fwd, f2=left fwd/right back
       if (frame === 99) {
-        // Celebrate: both arms up
-        // Left arm up
         p(ctx, 6, 17, 3, 8, sh); p(ctx, 5, 16, 2, 8, sh);
         p(ctx, 5, 16, 1, 8, shL); p(ctx, 7, 16, 1, 8, shD);
-        // Forearm
         p(ctx, 4, 12, 3, 6, sk); p(ctx, 4, 12, 1, 6, skL); p(ctx, 6, 12, 1, 6, skD);
-        // Right arm up
         p(ctx, 23, 17, 3, 8, sh); p(ctx, 25, 16, 2, 8, sh);
         p(ctx, 23, 16, 1, 8, shD); p(ctx, 26, 16, 1, 8, shL);
-        // Forearm
         p(ctx, 25, 12, 3, 6, sk); p(ctx, 25, 12, 1, 6, skD); p(ctx, 27, 12, 1, 6, skL);
       } else if (f === 0) {
-        // Neutral: arms slightly bent at sides
-        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, false, 0);  // left arm
-        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, true, 0);  // right arm
+        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, false, 0);
+        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, true, 0);
       } else if (f === 1) {
-        // Left arm back, right arm forward
-        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, false, -1); // left back
-        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, true, 1); // right forward
+        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, false, -1);
+        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, true, 1);
       } else {
-        // Left arm forward, right arm back
-        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, false, 1);  // left forward
-        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, true, -1); // right back
+        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, false, 1);
+        drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, true, -1);
       }
 
-      /* ── 11. LEGS — animated ── */
       if (frame === 99) {
-        // Both feet down, standing wide
         drawLeg(ctx, pa, paD, paL, zo, zoD, zoL, sk, skD, skL, OUT, false, 0);
         drawLeg(ctx, pa, paD, paL, zo, zoD, zoL, sk, skD, skL, OUT, true, 0);
       } else if (f === 0) {
@@ -677,170 +737,128 @@
         drawLeg(ctx, pa, paD, paL, zo, zoD, zoL, sk, skD, skL, OUT, true, -1);
       }
 
-      /* ── 12. Ground shadow ── */
       ctx.fillStyle = 'rgba(0,0,0,0.25)';
       ctx.beginPath();
       ctx.ellipse(16, SH - 1, 9, 2, 0, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    /* ── ARM DRAWING ──
-       isRight: false=left arm, true=right arm
-       pose: -1=back, 0=neutral, 1=forward
-    */
     function drawArm(ctx, sh, shD, shL, sk, skD, skL, OUT, isRight, pose) {
-      const x = isRight ? 23 : 6;  // base x
-      const xD = isRight ? 1 : -1; // direction
-      const ay = 19;           // shoulder y
+      const x = isRight ? 23 : 6;
+      const xD = isRight ? 1 : -1;
+      const ay = 19;
 
       if (pose === 0) {
-        // Neutral: straight down
         const ax = isRight ? 22 : 9;
         p(ctx, ax, ay, 3, 7, sh);
         p(ctx, ax + (isRight ? 0 : 0), ay, 1, 7, isRight ? shD : shL);
         p(ctx, ax + (isRight ? 2 : 0), ay, 1, 7, isRight ? shL : shD);
-        // Forearm
         p(ctx, ax, ay + 7, 3, 5, sk);
         p(ctx, ax, ay + 7, 1, 5, isRight ? skD : skL);
       } else if (pose === -1) {
-        // Arm pulled back (behind body)
         const ax = isRight ? 21 : 8;
         const offY = 3;
         p(ctx, ax, ay + offY, 3, 6, shD);
-        // Forearm back-angled
         p(ctx, ax + (isRight ? 1 : -1), ay + offY + 5, 3, 4, darken(sk, .85));
       } else {
-        // Arm forward
         const ax = isRight ? 23 : 7;
         const offY = -2;
         p(ctx, ax, ay + offY, 3, 7, sh);
         p(ctx, ax, ay + offY, 1, 7, isRight ? shD : shL);
-        // Forearm angled forward
         p(ctx, ax + (isRight ? 1 : -1), ay + offY + 6, 3, 5, sk);
         p(ctx, ax + (isRight ? 1 : -1), ay + offY + 6, 1, 5, isRight ? skD : skL);
       }
     }
 
-    /* ── LEG DRAWING ──
-       isRight: false=left, true=right
-       pose: -1=back, 0=neutral, 1=forward
-    */
     function drawLeg(ctx, pa, paD, paL, zo, zoD, zoL, sk, skD, skL, OUT, isRight, pose) {
-      const lx = isRight ? 17 : 10;  // thigh x
-      const ly = 31;              // thigh top y
+      const lx = isRight ? 17 : 10;
+      const ly = 31;
 
       if (pose === 0) {
-        // Both straight down
         p(ctx, lx, ly, 5, 8, pa);
         p(ctx, lx, ly, 1, 8, isRight ? paD : paL);
         p(ctx, lx + 4, ly, 1, 8, isRight ? paL : paD);
-        // Shin/skin
         p(ctx, lx, ly + 8, 5, 5, sk);
         p(ctx, lx, ly + 8, 1, 5, isRight ? skD : skL);
-        // Shoe
         p(ctx, lx - 1, ly + 13, 7, 4, zo);
         p(ctx, lx - 1, ly + 16, 7, 1, zoD);
         p(ctx, lx - 1, ly + 13, 7, 1, zoL);
         p(ctx, lx - 1, ly + 13, 1, 4, isRight ? zoD : zoL);
       } else if (pose === 1) {
-        // Leg forward and up
         const fwdX = isRight ? 18 : 9;
         const fwdY = ly - 4;
-        // Thigh forward diagonal
         p(ctx, fwdX, fwdY, 5, 9, pa);
         p(ctx, fwdX, fwdY, 1, 9, isRight ? paD : paL);
         p(ctx, fwdX + 4, fwdY, 1, 9, isRight ? paL : paD);
-        // Knee cap
         p(ctx, fwdX + 1, fwdY + 8, 3, 2, lighten(sk, 1.1));
-        // Shin vertical
         p(ctx, fwdX, fwdY + 9, 5, 5, sk);
         p(ctx, fwdX, fwdY + 9, 1, 5, isRight ? skD : skL);
-        // Shoe (heel up slightly)
         p(ctx, fwdX - 1, fwdY + 13, 7, 3, zo);
         p(ctx, fwdX - 1, fwdY + 15, 7, 1, zoD);
         p(ctx, fwdX - 1, fwdY + 13, 7, 1, zoL);
       } else {
-        // Leg back and down
         const bckX = isRight ? 16 : 11;
         const bckY = ly + 2;
-        // Thigh back diagonal
         p(ctx, bckX, bckY, 5, 8, paD);
         p(ctx, bckX, bckY, 1, 8, isRight ? darken(paD, .8) : lighten(paD, 1.1));
-        // Shin
         p(ctx, bckX, bckY + 8, 5, 5, darken(sk, .85));
-        // Shoe behind
         p(ctx, bckX, bckY + 13, 6, 3, zoD);
         p(ctx, bckX, bckY + 13, 6, 1, zo);
       }
     }
 
-    /* ── HAIR DRAWING ──
-       back=true: draw elements behind the head (long hair back)
-       back=false: draw elements in front (top hair, bangs)
-    */
     function drawHair(ctx, r, ha, haD, haL, OUT, isFem, back) {
       const style = HAIR_NAMES[r.hStyle];
       const hx = 11, hy = 3, hw = 10;
 
       if (back) {
         if (style === 'Largo' || style === 'Ponytail') {
-          // Long back hair flowing down
           p(ctx, hx - 2, hy + 2, 3, 18, ha); p(ctx, hx - 2, hy + 2, 1, 18, haL); p(ctx, hx, hy + 2, 1, 18, haD);
           p(ctx, hx + hw - 1, hy + 2, 3, 16, ha); p(ctx, hx + hw + 1, hy + 2, 1, 16, haD);
         }
         if (style === 'Ponytail') {
-          // Ponytail bundle going down-right
           p(ctx, hx + hw, hy + 4, 3, 14, ha); p(ctx, hx + hw + 1, hy + 5, 2, 12, haD);
           p(ctx, hx + hw, hy + 17, 4, 3, ha); p(ctx, hx + hw + 1, hy + 18, 2, 2, haD);
         }
         return;
       }
 
-      // Front layer (drawn after head)
       if (style === 'Gorra') {
-        // Baseball cap: brim + crown
-        p(ctx, hx - 2, hy, hw + 4, 1, OUT);         // brim top outline
-        p(ctx, hx - 2, hy + 1, hw + 4, 3, SHIRT[r.shirt]); // brim body
-        p(ctx, hx - 1, hy - 3, hw + 2, 5, SHIRT[r.shirt]); // cap crown
-        p(ctx, hx - 1, hy - 3, hw + 2, 1, lighten(SHIRT[r.shirt], 1.4)); // crown highlight
-        p(ctx, hx, hy - 4, hw, 1, darken(SHIRT[r.shirt], .7)); // crown top
+        p(ctx, hx - 2, hy, hw + 4, 1, OUT);
+        p(ctx, hx - 2, hy + 1, hw + 4, 3, SHIRT[r.shirt]);
+        p(ctx, hx - 1, hy - 3, hw + 2, 5, SHIRT[r.shirt]);
+        p(ctx, hx - 1, hy - 3, hw + 2, 1, lighten(SHIRT[r.shirt], 1.4));
+        p(ctx, hx, hy - 4, hw, 1, darken(SHIRT[r.shirt], .7));
         return;
       }
 
       if (style === 'Cresta') {
-        // Tall strip down center
         p(ctx, hx + 3, hy - 5, 4, 8, ha);
         p(ctx, hx + 4, hy - 5, 2, 8, haL);
         p(ctx, hx + 3, hy - 5, 1, 8, haD);
-        // Shaved sides
         p(ctx, hx, hy, 4, 6, darken(SKIN[r.skin], .85));
         p(ctx, hx + 6, hy, 4, 6, darken(SKIN[r.skin], .85));
       } else if (style === 'Rapao') {
-        // Bun on top
         p(ctx, hx + 2, hy - 6, 6, 6, ha);
         p(ctx, hx + 3, hy - 6, 4, 1, haL);
         p(ctx, hx + 2, hy - 6, 1, 6, haL);
         p(ctx, hx + 7, hy - 6, 1, 6, haD);
         p(ctx, hx + 2, hy - 1, 6, 2, haD);
-        // Top of head hair
         p(ctx, hx, hy - 1, hw, 4, ha);
         p(ctx, hx, hy - 1, hw, 1, haL);
       } else if (style === 'Ronaldo') {
-        // Faded sides, top hair
-        p(ctx, hx, hy, 3, 5, darken(ha, .5));     // faded left
-        p(ctx, hx + 7, hy, 3, 5, darken(ha, .5));   // faded right
-        p(ctx, hx + 2, hy - 2, 6, 5, ha);            // top section
+        p(ctx, hx, hy, 3, 5, darken(ha, .5));
+        p(ctx, hx + 7, hy, 3, 5, darken(ha, .5));
+        p(ctx, hx + 2, hy - 2, 6, 5, ha);
         p(ctx, hx + 2, hy - 2, 6, 1, haL);
       } else {
-        // Short / Long / Ponytail front: standard top hair
         const extraW = isFem ? 2 : 0;
-        p(ctx, hx - extraW, hy - 1, hw + extraW * 2, 5, ha);  // top hair mass
-        p(ctx, hx - extraW, hy - 1, hw + extraW * 2, 1, haL); // top highlight
-        p(ctx, hx - extraW, hy + 3, 1, 4, isFem ? haD : haD); // left side
-        p(ctx, hx + hw + extraW - 1, hy + 3, 1, 4, haD);      // right side shadow
-        // Bangs
+        p(ctx, hx - extraW, hy - 1, hw + extraW * 2, 5, ha);
+        p(ctx, hx - extraW, hy - 1, hw + extraW * 2, 1, haL);
+        p(ctx, hx - extraW, hy + 3, 1, 4, isFem ? haD : haD);
+        p(ctx, hx + hw + extraW - 1, hy + 3, 1, 4, haD);
         if (isFem) {
-          p(ctx, hx, hy + 3, 4, 3, ha);     // left bangs
+          p(ctx, hx, hy + 3, 4, 3, ha);
           p(ctx, hx, hy + 3, 1, 3, haL);
         } else {
           p(ctx, hx, hy + 3, 3, 2, ha);
@@ -861,7 +879,7 @@
     function clearCache(id) { for (const k of _cache.keys()) if (k.startsWith(`${id},`)) _cache.delete(k); }
 
     /* ════════════════════════════════════════════
-       PARALLAX LANDSCAPE   (all in virtual pixels)
+       PARALLAX LANDSCAPE
        ════════════════════════════════════════════ */
     const HORIZON = 110;
     let SC = { stars: 0, mtn: 0, city: 0, tree: 0, gnd: 0 };
@@ -907,12 +925,10 @@
 
     function drawLandscape() {
       const W = VW, H = VH;
-      // Sky bands
       [['#04050c', 0, 20], ['#060810', 20, 18], ['#08091a', 38, 18],
       ['#0b0f22', 56, 18], ['#0e1428', 74, 16], ['#121a32', 90, 14],
       ['#18243c', HORIZON - 6, 6]].forEach(([c, y, h]) => { vc.fillStyle = c; vc.fillRect(0, y, W, h); });
 
-      // Stars
       for (let i = 0; i < 140; i++) {
         const sx = ((i * 173 + 29 - SC.stars) % W + W) % W | 0;
         const sy = ((i * 97 + 11) * 0.84 % (HORIZON * 0.9)) | 0;
@@ -923,7 +939,6 @@
         }
       }
 
-      // Moon (r=14)
       const mX = Math.round(W * 0.87), mY = Math.round(HORIZON * 0.25);
       for (let dy = -14; dy <= 14; dy++)for (let dx = -14; dx <= 14; dx++) {
         if (dx * dx + dy * dy <= 196) {
@@ -933,48 +948,40 @@
           vc.fillRect(mX + dx, mY + dy, 1, 1);
         }
       }
-      // Moon glow
       vc.save(); vc.globalAlpha = 0.12;
       const mg = vc.createRadialGradient(mX, mY, 0, mX, mY, 60);
       mg.addColorStop(0, '#f0e090'); mg.addColorStop(1, 'transparent');
       vc.fillStyle = mg; vc.fillRect(mX - 60, mY - 60, 120, 120); vc.restore();
 
-      // Clouds
       cloudX += 0.035;
       CLOUDS.forEach(cl => {
         const cx = ((cl.x - cloudX * cl.sp * 55) % W + W) % W;
         drawCloud(cx, cl.y, cl.w, cl.h);
       });
 
-      // Mountains
       const mOff = SC.mtn % WL | 0;
       for (let rep = -1; rep <= 1; rep++) MTNS.forEach(m => {
         const mx = m.x + rep * WL - mOff;
         if (mx > -m.w - 2 && mx < W + 2) drawMtn(mx, HORIZON, m.w, m.h, m.col, m.snow, m.rocky);
       });
 
-      // City
       const cOff = SC.city % WL | 0;
       for (let rep = -1; rep <= 1; rep++) BLDGS.forEach(b => {
         const bx = b.x + rep * WL - cOff;
         if (bx > -b.w - 2 && bx < W + 2) drawBldg(bx, HORIZON, b);
       });
 
-      // Horizon line
       for (let y = HORIZON - 4; y <= HORIZON + 2; y++) {
         const a = (y - (HORIZON - 4)) / 6;
         vc.fillStyle = `rgba(18,36,24,${a * 0.8})`; vc.fillRect(0, y, W, 1);
       }
 
-      // Ground layers
       [[HORIZON + 0, 3, '#1e3820'], [HORIZON + 3, 5, '#1a3018'], [HORIZON + 8, 8, '#162a14'],
       [HORIZON + 16, 14, '#122212'], [HORIZON + 30, 20, '#0e1c0e'], [HORIZON + 50, H, '#0c180c']
       ].forEach(([y, h, c]) => { vc.fillStyle = c; vc.fillRect(0, y, W, h); });
-      // Ground texture
       vc.fillStyle = '#1c3018';
       for (let gy = HORIZON + 5; gy < H; gy += 6) for (let gx = gy % 12; gx < W; gx += 12) vc.fillRect(gx, gy, 5, 1);
 
-      // Trees
       const tOff = SC.tree % WL | 0;
       const tBaseY = HORIZON + 4;
       for (let rep = -1; rep <= 1; rep++) TREES.forEach(t => {
@@ -982,14 +989,12 @@
         if (tx > -t.cw - 4 && tx < W + t.cw + 4) drawTree(tx, tBaseY, t);
       });
 
-      // Vegetation
       const vOff = (SC.gnd * 0.65) % WL | 0;
       for (let rep = -1; rep <= 1; rep++) VEGE.forEach(v => {
         const vx = v.x + rep * WL - vOff;
         if (vx > -20 && vx < W + 20) drawVege(vx, HORIZON + 18, v);
       });
 
-      // Ground props
       const gOff = SC.gnd % WL | 0;
       for (let rep = -1; rep <= 1; rep++) PROPS.forEach(g => {
         const gx = g.x + rep * WL - gOff;
@@ -1128,7 +1133,6 @@
       }
     }
 
-    /* Finish line */
     function drawFinish(fx) {
       const top = HORIZON + 28;
       vc.fillStyle = '#d8d8d8'; vc.fillRect(fx, top, 2, VH - top);
@@ -1153,9 +1157,7 @@
       const cy = (laneY + laneH * .5) | 0;
       const bH = 7, bY = cy - (bH / 2 | 0);
 
-      // Bar shadow
       vc.fillStyle = 'rgba(0,0,0,.45)'; vc.fillRect(LBL, bY + bH, trackW, 2); vc.fillRect(LBL + trackW, bY, 2, bH);
-      // Bar bg
       vc.fillStyle = '#080c14'; vc.fillRect(LBL, bY, trackW, bH);
 
       if (fillX > 0) {
@@ -1163,7 +1165,6 @@
         vc.fillStyle = darken(sc, .58); vc.fillRect(LBL, bY, fillX, bH);
         vc.fillStyle = sc; vc.fillRect(LBL, bY + 1, fillX, bH - 2);
         vc.fillStyle = lighten(sc, 1.65); vc.fillRect(LBL, bY, fillX, 1);
-        // Segment ticks every 10%
         for (let s = 1; s < 10; s++) {
           const tx = (LBL + trackW * s * .1) | 0;
           if (tx < LBL + fillX) { vc.fillStyle = 'rgba(0,0,0,.3)'; vc.fillRect(tx, bY, 1, bH); }
@@ -1171,30 +1172,25 @@
         if (fillX < trackW) { vc.fillStyle = lighten(sc, 1.3); vc.fillRect(LBL + fillX - 1, bY, 1, bH); }
       }
 
-      // Name
       vc.fillStyle = '#608098'; vc.font = '7px "Press Start 2P"';
       vc.textAlign = 'left'; vc.textBaseline = 'middle';
       vc.fillText(runner.name.slice(0, 10), 4, cy);
 
-      // Score
       const val = animVals[idx] | 0;
       const pct = GOAL > 0 ? (val / GOAL * 100 | 0) : 0;
       vc.fillStyle = lighten(SHIRT[runner.shirt], 1.15); vc.font = '7px "Press Start 2P"';
       vc.textAlign = 'right'; vc.fillText(`${val}`, W - 2, cy - 5);
       vc.fillStyle = '#405870'; vc.font = '5px "Press Start 2P"'; vc.fillText(`${pct}%`, W - 2, cy + 6);
 
-      // Sprite
       if (fillX >= 8) {
         const goalDone = progress >= 0.99;
         const fi = goalDone ? 99 : ((framePh[idx] | 0) % 3);
         const sp = getCached(runner, fi);
-        // Scale: fit to lane height
         const desH = laneH * 0.94;
         const scale = Math.max(2, Math.min(4, (desH / SH) | 0));
         const sw = SW * scale, sh = SH * scale;
         const sx = (LBL + fillX - sw * .28) | 0;
         const sy = (cy + bH * .5 - sh + 2) | 0;
-        // Ground shadow ellipse
         vc.fillStyle = 'rgba(0,0,0,.28)';
         vc.beginPath(); vc.ellipse(sx + sw * .5, sy + sh, sw * .42, 3, 0, 0, Math.PI * 2); vc.fill();
         vc.imageSmoothingEnabled = false;
@@ -1202,7 +1198,6 @@
       }
     }
 
-    /* Ranking */
     function drawRanking() {
       const sorted = [...runners].map((r, i) => ({ ...r, av: animVals[i] })).sort((a, b) => b.av - a.av);
       const px = VW - 124, py = 4, pw = 120, rh = 18, ph = 3 * rh + 6;
@@ -1242,7 +1237,6 @@
       drawFinish(LBL + trackW);
       runners.forEach((r, i) => drawLane(r, i, GOAL > 0 ? animVals[i] / GOAL : 0, top + i * lH, lH));
       drawRanking();
-      // Blit to screen (letterboxed)
       const mW = MC.width, mH = MC.height;
       mc.fillStyle = '#06070f'; mc.fillRect(0, 0, mW, mH);
       const scale = Math.min(mW / VW, mH / VH);
@@ -1251,7 +1245,7 @@
     }
 
     /* ════════════════════════════════════════════
-       AVATAR PREVIEW  (48×64 display)
+       AVATAR PREVIEW
        ════════════════════════════════════════════ */
     function makeAvatar(runner) {
       const oc = document.createElement('canvas'); oc.width = 32; oc.height = 48;
@@ -1276,20 +1270,38 @@
       <input class="pxi" type="number" id="goalIn" value="${GOAL}" min="1"></div>
     <div class="slb">▶ CORREDORES</div>
     ${sorted.map((r, rank) => cardHTML(r, rank)).join('')}`;
-      $id('goalIn').onchange = e => { GOAL = parseInt(e.target.value) || 100; updH(); };
+      $id('goalIn').onchange = e => {
+        GOAL = parseInt(e.target.value) || 100;
+        updH();
+        saveState();
+      };
       runners.forEach((_, i) => bindCard(i));
     }
 
     function bindCard(i) {
-      $id('nm' + i)?.addEventListener('input', e => { runners[i].name = e.target.value; });
-      $id('vl' + i)?.addEventListener('input', e => { runners[i].value = parseInt(e.target.value) || 0; refreshBar(i); });
+      $id('nm' + i)?.addEventListener('input', e => {
+        runners[i].name = e.target.value;
+        saveState();
+      });
+      $id('vl' + i)?.addEventListener('input', e => {
+        runners[i].value = parseInt(e.target.value) || 0;
+        refreshBar(i);
+        saveState();
+      });
       $id('av' + i)?.addEventListener('click', () => {
         const cp = $id('cp' + i), rc = $id('rc' + i);
         const o = cp.classList.toggle('open'); rc.classList.toggle('open', o);
       });
+
+      // Helper: bind color/style swatches with auto-save
       const rb = (pfx, arr, prop, cb) => arr.forEach((_, ci) => {
         $id(`${pfx}${i}_${ci}`)?.addEventListener('click', () => {
-          runners[i][prop] = ci; clearCache(i); refreshAv(i); if (cb) cb(i); selAll(`${pfx}${i}_`, ci, arr.length);
+          runners[i][prop] = ci;
+          clearCache(i);
+          refreshAv(i);
+          if (cb) cb(i);
+          selAll(`${pfx}${i}_`, ci, arr.length);
+          saveState();
         });
       });
       rb('gn', GENDER_NAMES, 'gender', null);
@@ -1307,7 +1319,7 @@
       const pp = $id('cp2' + i); if (pp) pp.textContent = `${pct}% · ${r.value} exp.`;
     }
     function refreshAv(i) { const el = $id('avimg' + i); if (el) el.src = makeAvatar(runners[i]); }
-    function updH() { $id('hstat').textContent = `META: ${GOAL} · ${runners.length} RUNNERS`; }
+    function updH() { $id('hstat')?.textContent && ($id('hstat').textContent = `META: ${GOAL} · ${runners.length} RUNNERS`); }
 
     function cardHTML(r, rank) {
       const medals = ['🥇', '🥈', '🥉'];
@@ -1341,13 +1353,49 @@
     function applyAll() {
       runners.forEach((r, i) => { targetVals[i] = r.value; });
       GOAL = parseInt($id('goalIn')?.value) || GOAL;
-      updH(); renderSidebar(); toast('GUARDADO!');
+      updH();
+      saveState();
+      renderSidebar();
+      toast('💾 GUARDADO!');
     }
+
     function togglePause() { paused = !paused; $id('pauseBtn').textContent = paused ? '► PLAY' : '⏸ PAUSE'; }
+
     function toast(msg) { const t = $id('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2000); }
 
-    renderSidebar();
-    requestAnimationFrame(loop);
+    /* ════════════════════════════════════════════
+       INIT — cargar estado guardado y arrancar
+       ════════════════════════════════════════════ */
+    (async () => {
+      try {
+        const saved = await loadState();
+        if (saved) {
+          GOAL = saved.goal || GOAL;
+          // Restaurar runners: mantener los IDs del original, sobreescribir con datos guardados
+          if (Array.isArray(saved.runners) && saved.runners.length > 0) {
+            // Si tienen el mismo número de runners, restaurar directamente
+            if (saved.runners.length === runners.length) {
+              saved.runners.forEach((sr, i) => {
+                // Copiar todas las propiedades guardadas pero asegurarse de que id existe
+                runners[i] = { ...runners[i], ...sr, id: i };
+              });
+            } else {
+              // Diferente número: restaurar los que coincidan por id
+              saved.runners.forEach(sr => {
+                const idx = runners.findIndex(r => r.id === sr.id);
+                if (idx >= 0) runners[idx] = { ...runners[idx], ...sr, id: idx };
+              });
+            }
+          }
+          animVals = runners.map(r => r.value);
+          targetVals = runners.map(r => r.value);
+        }
+      } catch (e) {
+        console.warn('No se pudo cargar estado guardado:', e);
+      }
+      renderSidebar();
+      requestAnimationFrame(loop);
+    })();
   </script>
 </body>
 
